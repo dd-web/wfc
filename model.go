@@ -3,40 +3,13 @@ package wfc
 import (
 	"fmt"
 	"image"
-	"image/color"
-	"image/draw"
 	_ "image/jpeg"
 	"image/png"
-	"math/rand"
 	"os"
-	"time"
 )
 
 var (
 	localID int = 0
-	rnumgen *rand.Rand
-
-	COLOR_RED     = color.RGBA{R: 255, G: 0, B: 0, A: 255}
-	COLOR_GREEN   = color.RGBA{R: 0, G: 255, B: 0, A: 255}
-	COLOR_BLUE    = color.RGBA{R: 0, G: 0, B: 255, A: 255}
-	COLOR_YELLOW  = color.RGBA{R: 255, G: 255, B: 0, A: 255}
-	COLOR_CYAN    = color.RGBA{R: 0, G: 255, B: 255, A: 255}
-	COLOR_MAGENTA = color.RGBA{R: 255, G: 0, B: 255, A: 255}
-	COLOR_ORANGE  = color.RGBA{R: 255, G: 165, B: 0, A: 255}
-	COLOR_PURPLE  = color.RGBA{R: 128, G: 0, B: 128, A: 255}
-	COLOR_BROWN   = color.RGBA{R: 165, G: 42, B: 42, A: 255}
-
-	COLOR_MAP = [9]color.RGBA{
-		COLOR_RED,
-		COLOR_GREEN,
-		COLOR_BLUE,
-		COLOR_YELLOW,
-		COLOR_CYAN,
-		COLOR_MAGENTA,
-		COLOR_ORANGE,
-		COLOR_PURPLE,
-		COLOR_BROWN,
-	}
 )
 
 type WFModelSpatialFS struct {
@@ -48,6 +21,7 @@ type WFModelSpatialFS struct {
 type WFModelPartition struct {
 	Size, Position image.Point
 	Region         image.Rectangle
+	Data           *image.RGBA
 }
 
 type WFModelSet struct {
@@ -59,8 +33,68 @@ type WFModelSet struct {
 	Partitions   []*WFModelPartition
 }
 
-// Creates a new WFModelSet using the parameters given
-func NewWFModelSet(name string, sizeX int, sizeY int, subdivisionsX, subdivisionsY int) *WFModelSet {
+// Create a new model set from the provided image at path
+func NewWFModelSet(path string, subdivX, subdivY int) (*WFModelSet, error) {
+	localID++
+	img, err := LoadImage(path)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	bounds := img.Bounds()
+	sX, sY := bounds.Dx(), bounds.Dy()
+
+	spif := &WFModelSpatialFS{
+		Width:        sX,
+		Height:       sY,
+		Square:       sX == sY,
+		RegionWidth:  sX / subdivX,
+		RegionHeight: sY / subdivY,
+	}
+
+	model := &WFModelSet{
+		ID:           localID,
+		Name:         f.Name(),
+		Size:         spif,
+		Subdivisions: image.Point{Y: subdivY, X: subdivX},
+		BaseImage:    ImageToRGBA(img),
+		Partitions:   []*WFModelPartition{},
+	}
+
+	for y := 0; y < subdivY; y++ {
+		for x := 0; x < subdivX; x++ {
+			partition := &WFModelPartition{
+				Size:     image.Point{Y: spif.RegionHeight, X: spif.RegionWidth},
+				Position: image.Point{Y: y, X: x},
+				Region: image.Rectangle{
+					Min: image.Pt(x*spif.RegionWidth, y*spif.RegionHeight),
+					Max: image.Pt((x+1)*spif.RegionWidth, (y+1)*spif.RegionHeight),
+				},
+			}
+			partition.Data = CopyImageRegionData(model.BaseImage, partition.Region)
+			model.Partitions = append(model.Partitions, partition)
+		}
+	}
+
+	return model, nil
+}
+
+// Save the models data to an output png file
+func (model *WFModelSet) Save() error {
+	if err := SaveImage(fmt.Sprintf("output/generated_%s", model.Name), model.BaseImage); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Creates a new sample image
+// @TODO partition analysis and propagation to collapse the wave function
+func NewSample(name string, sizeX int, sizeY int, subdivisionsX, subdivisionsY int) *WFModelSet {
 	localID++
 
 	spif := &WFModelSpatialFS{
@@ -92,77 +126,23 @@ func NewWFModelSet(name string, sizeX int, sizeY int, subdivisionsX, subdivision
 				},
 			}
 
-			fillImageRectWithColor(model.BaseImage, GetRandomColor(), partition.Region)
+			SetRegionColor(model.BaseImage, GetRandomColor(), partition.Region)
 			model.Partitions = append(model.Partitions, partition)
 		}
 	}
 
-	// model.SubRegions = regions
 	return model
 }
 
-// Load image data from path
-func LoadImage(path string) (image.Image, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	img, _, err := image.Decode(file)
-	if err != nil {
-		return nil, err
-	}
-	return img, nil
-}
-
-// Save image to local drive
-func SaveImage(file string, img image.Image) error {
-	_, err := os.Stat(file)
-	if err != nil {
-		return err
-	}
-
-	if err := os.Remove(file); err != nil {
-		return err
-	}
-
-	f, err := os.Create(file)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-	png.Encode(f, img)
-	return nil
-}
-
-// fill a rect within the image a certain color
-func fillImageRectWithColor(img draw.Image, col color.Color, rect image.Rectangle) {
-	for y := rect.Min.Y; y < rect.Max.Y; y++ {
-		for x := rect.Min.X; x < rect.Max.X; x++ {
-			img.Set(x, y, col)
-		}
-	}
-}
-
-// Load image from path provided.
-// returns a pointer to the loaded image data
-func LoadImageFromPath(path string) (*image.Image, error) {
-	img, err := LoadImage(path)
-	if err != nil {
-		return nil, err
-	}
-	return &img, nil
-}
-
-// make a new sample image
+// Creates and saves a new sample image with provided name and size
+// outputs to output/samples in png format.
 func NewSampleImage(name string, size int) error {
 
-	InitRnd(rand.New(rand.NewSource(time.Now().UnixNano())))
+	fullPath := fmt.Sprintf("output/samples/%s.png", name)
 
 	// seems like sizes need to be fairly even or the fractional bit adds up.
 	// the more unevenly they divide leaves more of the edge unprocessed (alpha)
-	wfModel := NewWFModelSet("output/samples/coolset.png", 512, 512, 32, 32)
+	wfModel := NewSample(fullPath, size, size, 32, 32)
 
 	file, err := os.Create(wfModel.Name)
 	if err != nil {
@@ -177,28 +157,4 @@ func NewSampleImage(name string, size int) error {
 
 	fmt.Printf("Random sample image %q.png created in output/samples.\n", wfModel.Name)
 	return nil
-}
-
-// cycles colors from an index
-func GetColorFromIndex(index int) color.RGBA {
-	ix := index % len(COLOR_MAP)
-	if ix <= len(COLOR_MAP) {
-		return COLOR_MAP[ix]
-	}
-	return COLOR_RED
-}
-
-// initialize the random number seed
-func InitRnd(rng *rand.Rand) {
-	rnumgen = rng
-}
-
-// get a random color
-func GetRandomColor() color.RGBA {
-	return color.RGBA{
-		R: uint8(rnumgen.Intn(256)),
-		G: uint8(rnumgen.Intn(256)),
-		B: uint8(rnumgen.Intn(256)),
-		A: uint8(255),
-	}
 }

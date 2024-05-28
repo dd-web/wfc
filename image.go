@@ -125,18 +125,41 @@ func GetRandomColorWithAlpha(alpha uint8) color.RGBA {
 	}
 }
 
+// Get the color value at a given pixel.
+// if point is outside of supplied image bounds, a default color is returned instead.
+func GetPixelColor(img *image.RGBA, pt image.Point) color.RGBA {
+	if !pt.In(img.Bounds()) {
+		return c_RED
+	}
+	ix := img.PixOffset(pt.X, pt.Y)
+	return color.RGBA{
+		R: img.Pix[ix],
+		G: img.Pix[ix+1],
+		B: img.Pix[ix+2],
+		A: img.Pix[ix+3],
+	}
+}
+
 // Gets a color that cooresponds to the index of the modulus of the seed
 func GetSeededColor(seed int) color.RGBA {
 	return c_MAP[seed%len(c_MAP)]
 }
 
+// Defines one fouth of a region's area.
+//
+//	0 = top left
+//	2 = top right
+//	4 = bottom left
+//	8 = bottom right
+//
+// The area can be retreived using one of the constant's GetImageRegionSize() methods.
 type RectQuadRegion uint
 
 const (
 	RQR_TL RectQuadRegion = iota
-	RQR_TR RectQuadRegion = iota << 1
-	RQR_BL RectQuadRegion = iota << 1
-	RQR_BR RectQuadRegion = iota << 1
+	RQR_TR RectQuadRegion = 1 << iota
+	RQR_BL RectQuadRegion = 1 << iota
+	RQR_BR RectQuadRegion = 1 << iota
 )
 
 // Returns a quad of the provided image as an image.Rectangle.

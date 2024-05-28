@@ -3,6 +3,7 @@ package wfc
 import (
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg"
 	"image/png"
 	"os"
@@ -11,6 +12,21 @@ import (
 var (
 	localID int = 0
 )
+
+// Defines a final cell state
+type CellState struct {
+	ID     int
+	Pixels []color.Color
+}
+
+type Cell struct {
+	Pt        image.Point
+	ID        int
+	Wt        float64
+	Collapsed bool
+	Pixels    []color.Color
+	State     *CellState
+}
 
 type WFModelSpatialFS struct {
 	Width, Height             int
@@ -22,6 +38,20 @@ type WFModelPartition struct {
 	Size, Position image.Point
 	Region         image.Rectangle
 	Data           *image.RGBA
+	CollapsedCount int
+	FullyCollapsed bool
+	Cells          []*Cell
+	Colors         map[color.RGBA]int
+}
+
+func (mp *WFModelPartition) FindColors() {
+	for _, c := range mp.Cells {
+		col := GetPixelColor(mp.Data, c.Pt)
+		_, ok := mp.Colors[col]
+		if !ok {
+			mp.Colors[col] = 1
+		}
+	}
 }
 
 type WFModelSet struct {
@@ -31,6 +61,8 @@ type WFModelSet struct {
 	Subdivisions image.Point
 	BaseImage    *image.RGBA
 	Partitions   []*WFModelPartition
+	States       []*CellState
+	Colors       []color.Color
 }
 
 // Create a new model set from the provided image at path
@@ -75,6 +107,10 @@ func NewWFModelSet(path string, subdivX, subdivY int) (*WFModelSet, error) {
 					Min: image.Pt(x*spif.RegionWidth, y*spif.RegionHeight),
 					Max: image.Pt((x+1)*spif.RegionWidth, (y+1)*spif.RegionHeight),
 				},
+				CollapsedCount: 0,
+				FullyCollapsed: false,
+				Cells:          []*Cell{},
+				Colors:         make(map[color.RGBA]int),
 			}
 			partition.Data = CopyImageRegionData(model.BaseImage, partition.Region)
 			model.Partitions = append(model.Partitions, partition)

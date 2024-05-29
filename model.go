@@ -11,21 +11,98 @@ import (
 
 var (
 	localID int = 0
+
+	cnv_MAP = [8]CellNVector{
+		CNV_T,
+		CNV_TL,
+		CNV_L,
+		CNV_BL,
+		CNV_B,
+		CNV_BR,
+		CNV_R,
+		CNV_TR,
+	}
 )
 
-// Defines a final cell state
-type CellState struct {
-	ID     int
-	Pixels []color.Color
+type CellNVector uint
+
+const (
+	CNV_T  CellNVector = iota      // 0, -1
+	CNV_TL CellNVector = 1 << iota // -1, -1
+	CNV_L  CellNVector = 1 << iota // -1, 0
+	CNV_BL CellNVector = 1 << iota // -1, 1
+	CNV_B  CellNVector = 1 << iota // 0, 1
+	CNV_BR CellNVector = 1 << iota // 1, 1
+	CNV_R  CellNVector = 1 << iota // 1, 0
+	CNV_TR CellNVector = 1 << iota // 1, 1
+
+)
+
+// Returns the offset that should be applied to get the neighboring position
+func (cnv CellNVector) GetOffset() (x, y int) {
+	switch cnv {
+	case CNV_T:
+		return 0, -1
+	case CNV_TL:
+		return -1, -1
+	case CNV_L:
+		return -1, 0
+	case CNV_BL:
+		return -1, 1
+	case CNV_B:
+		return 0, 1
+	case CNV_BR:
+		return 1, 1
+	case CNV_R:
+		return 1, 0
+	case CNV_TR:
+		return 1, 1
+	}
+	return 0, 0
 }
 
-type Cell struct {
-	Pt        image.Point
-	ID        int
-	Wt        float64
-	Collapsed bool
-	Pixels    []color.Color
-	State     *CellState
+type MacroState struct {
+	MicroState map[CellNVector]float64
+}
+
+// Defines a cell's states and entropy systems
+type CellState struct {
+	Pt      image.Point
+	Entropy map[color.RGBA]*MacroState
+}
+
+// Conducts analysis of the cell state. Tracks colors and their position in relation to others
+// to eventually generate a map of weights that can be used to generate rules for outputs
+func (cs *CellState) EntropicAnalysis(img *image.RGBA) {
+	for _, k := range cnv_MAP {
+		ox, oy := k.GetOffset()
+		// fmt.Printf("offsets: [%d, %d]", ox, oy)
+		// fmt.Printf("bounds %+v", img)
+		bxmax, bymax := img.Rect.Max.X, img.Rect.Max.Y
+		if cs.Pt.X+ox < 0 || cs.Pt.Y+oy < 0 || ox > bxmax || oy > bymax {
+			continue
+		}
+		// fmt.Printf("PT %+v", cs.Pt)
+
+		pt := image.Pt(cs.Pt.X+ox, cs.Pt.Y+oy)
+		if !pt.In(img.Bounds()) {
+			continue
+		}
+		col := GetPixelColor(img, pt)
+		_, ok := cs.Entropy[col]
+		if !ok {
+			cs.Entropy[col] = &MacroState{
+				MicroState: make(map[CellNVector]float64, 0),
+			}
+		}
+
+		_, ok = cs.Entropy[col].MicroState[k]
+		if !ok {
+			cs.Entropy[col].MicroState[k] = 1
+		}
+
+		cs.Entropy[col].MicroState[k] += 1
+	}
 }
 
 type WFModelSpatialFS struct {
@@ -40,8 +117,9 @@ type WFModelPartition struct {
 	Data           *image.RGBA
 	CollapsedCount int
 	FullyCollapsed bool
-	Cells          []*Cell
-	Colors         map[color.RGBA]int
+	Cells          []*CellState
+	Colors         map[color.RGBA]float64
+	Entropy        map[color.RGBA]*MacroState
 }
 
 func (mp *WFModelPartition) FindColors() {
@@ -52,6 +130,73 @@ func (mp *WFModelPartition) FindColors() {
 			mp.Colors[col] = 1
 		}
 	}
+}
+
+func (mp *WFModelPartition) Analyze() {
+	sX, sY := mp.Region.Bounds().Dx(), mp.Region.Bounds().Dy()
+	// xmin, xmax := mp.Region.Min.X, mp.Region.Max.X
+	// fmt.Printf("[sX: %d], [sY: %d], [xmin: %d] [xmax: %d]", sX, sY, xmin, xmax)
+
+	for y := 0; y < sY; y++ {
+		for x := 0; x < sX; x++ {
+			cs := &CellState{
+				Pt:      image.Pt(x, y),
+				Entropy: make(map[color.RGBA]*MacroState),
+			}
+			cs.EntropicAnalysis(mp.Data)
+			// for i, j := range cs.Entropy {
+			// 	for mcs, nvd := range j.MicroState {
+			// 		if _, ok := mp.Entropy[i]; !ok {
+			// 			mp.Entropy[i] = &MacroState{
+			// 				MicroState: map[CellNVector]float64{},
+			// 			}
+			// 		}
+			// 		if _, ok := mp.Entropy[i].MicroState[mcs]; !ok {
+			// 			mp.Entropy[i].MicroState[mcs] = 0
+			// 		}
+			// 		mp.Entropy[i].MicroState[mcs] += nvd
+			// 	}
+			// }
+			mp.Cells = append(mp.Cells, cs)
+
+			for col, mc := range cs.Entropy {
+				for mis, mas := range mc.MicroState {
+
+					if _, ok := mp.Entropy[col]; !ok {
+						mp.Entropy[col] = &MacroState{MicroState: make(map[CellNVector]float64)}
+					}
+
+					if _, ok := mp.Entropy[col].MicroState[mis]; !ok {
+						mp.Entropy[col].MicroState[mis] = 0
+					}
+
+					mp.Entropy[col].MicroState[mis] += mas
+
+					if _, ok := mp.Colors[col]; !ok {
+						mp.Colors[col] = 0
+					}
+
+					mp.Colors[col] += mas
+
+					// fmt.Printf("color: [%+v], vector: [%+v], weight: %+f\n", col, mis, mas)
+				}
+			}
+		}
+	}
+
+	// fmt.Printf("Entropy length")
+
+	// for col, mc := range mp.Entropy {
+	// 	for s, v := range mc.MicroState {
+	// 		fmt.Printf("E: [%+v] - [%+v]: %f\n", col, s, v)
+	// 	}
+	// }
+	for col, wt := range mp.Colors {
+		fmt.Printf("color: %+v wt: %f\n", col, wt)
+	}
+
+	// fmt.Printf("Cell Size [%d, %d]. Pixels: %d\n", sX, sY, len(mp.Cells))
+	// fmt.Printf("	Averaged Weights %+v", mp.Entropy)
 }
 
 type WFModelSet struct {
@@ -109,12 +254,17 @@ func NewWFModelSet(path string, subdivX, subdivY int) (*WFModelSet, error) {
 				},
 				CollapsedCount: 0,
 				FullyCollapsed: false,
-				Cells:          []*Cell{},
-				Colors:         make(map[color.RGBA]int),
+				Cells:          []*CellState{},
+				Colors:         make(map[color.RGBA]float64),
+				Entropy:        make(map[color.RGBA]*MacroState),
 			}
 			partition.Data = CopyImageRegionData(model.BaseImage, partition.Region)
 			model.Partitions = append(model.Partitions, partition)
 		}
+	}
+
+	for _, mp := range model.Partitions {
+		mp.Analyze()
 	}
 
 	return model, nil
@@ -165,6 +315,10 @@ func NewSample(name string, sizeX int, sizeY int, subdivisionsX, subdivisionsY i
 			SetRegionColor(model.BaseImage, GetRandomColor(), partition.Region)
 			model.Partitions = append(model.Partitions, partition)
 		}
+	}
+
+	for _, mp := range model.Partitions {
+		mp.Analyze()
 	}
 
 	return model

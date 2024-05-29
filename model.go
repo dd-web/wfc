@@ -38,6 +38,28 @@ const (
 
 )
 
+func (cnv CellNVector) String() string {
+	switch cnv {
+	case CNV_T:
+		return "Top"
+	case CNV_TL:
+		return "Top Left"
+	case CNV_L:
+		return "Left"
+	case CNV_BL:
+		return "Bottom Left"
+	case CNV_B:
+		return "Bottom"
+	case CNV_BR:
+		return "Bottom Right"
+	case CNV_R:
+		return "Right"
+	case CNV_TR:
+		return "Top Right"
+	}
+	return "Unknown Cell Vector"
+}
+
 // Returns the offset that should be applied to get the neighboring position
 func (cnv CellNVector) GetOffset() (x, y int) {
 	switch cnv {
@@ -120,6 +142,51 @@ type WFModelPartition struct {
 	Cells          []*CellState
 	Colors         map[color.RGBA]float64
 	Entropy        map[color.RGBA]*MacroState
+	Checklist      map[image.Point]bool
+	Output         *image.RGBA
+	Done           bool
+}
+
+// color ->
+func (mp *WFModelPartition) Generate() {
+	sX, sY := mp.Region.Bounds().Dx(), mp.Region.Bounds().Dy()
+	for y := 0; y < sY; y++ {
+		for x := 0; x < sX; x++ {
+			pt := image.Pt(x, y)
+			if mp.Checklist[pt] {
+				continue
+			}
+			c1 := GetWeightedColor(mp.Colors)
+			SetPixelColor(mp.Output, pt, c1)
+			for _, k := range cnv_MAP {
+				ox, oy := k.GetOffset()
+				offsetPt := image.Pt(x+ox, y+oy)
+				bxmax, bymax := mp.Output.Rect.Max.X, mp.Output.Rect.Max.Y
+				if offsetPt.X < 0 || offsetPt.Y < 0 || offsetPt.X > bxmax || offsetPt.Y > bymax {
+					continue
+				}
+				c2 := GetWeightedColor(mp.Colors)
+				if mac, ok := mp.Entropy[c2]; ok {
+					if _, ok := mac.MicroState[k]; ok {
+						SetPixelColor(mp.Output, offsetPt, c2)
+						mp.Checklist[offsetPt] = true
+					}
+				}
+
+			}
+
+		}
+	}
+
+	compl := 0
+	for _, v := range mp.Checklist {
+		if v {
+			compl++
+		}
+	}
+	pct := (float64(compl) / float64(len(mp.Checklist))) * 100
+
+	fmt.Printf("Finished partition generation with %.2f%% variance. \n", pct)
 }
 
 func (mp *WFModelPartition) FindColors() {
@@ -132,71 +199,42 @@ func (mp *WFModelPartition) FindColors() {
 	}
 }
 
+// Analysis of the partition region subdivided for continued analysis to generate
+// a complete set of compressed weights to pull from on generation
 func (mp *WFModelPartition) Analyze() {
 	sX, sY := mp.Region.Bounds().Dx(), mp.Region.Bounds().Dy()
-	// xmin, xmax := mp.Region.Min.X, mp.Region.Max.X
-	// fmt.Printf("[sX: %d], [sY: %d], [xmin: %d] [xmax: %d]", sX, sY, xmin, xmax)
-
 	for y := 0; y < sY; y++ {
 		for x := 0; x < sX; x++ {
 			cs := &CellState{
 				Pt:      image.Pt(x, y),
 				Entropy: make(map[color.RGBA]*MacroState),
 			}
+			mp.Checklist[cs.Pt] = false
 			cs.EntropicAnalysis(mp.Data)
-			// for i, j := range cs.Entropy {
-			// 	for mcs, nvd := range j.MicroState {
-			// 		if _, ok := mp.Entropy[i]; !ok {
-			// 			mp.Entropy[i] = &MacroState{
-			// 				MicroState: map[CellNVector]float64{},
-			// 			}
-			// 		}
-			// 		if _, ok := mp.Entropy[i].MicroState[mcs]; !ok {
-			// 			mp.Entropy[i].MicroState[mcs] = 0
-			// 		}
-			// 		mp.Entropy[i].MicroState[mcs] += nvd
-			// 	}
-			// }
 			mp.Cells = append(mp.Cells, cs)
-
 			for col, mc := range cs.Entropy {
 				for mis, mas := range mc.MicroState {
-
 					if _, ok := mp.Entropy[col]; !ok {
 						mp.Entropy[col] = &MacroState{MicroState: make(map[CellNVector]float64)}
 					}
-
 					if _, ok := mp.Entropy[col].MicroState[mis]; !ok {
 						mp.Entropy[col].MicroState[mis] = 0
 					}
-
 					mp.Entropy[col].MicroState[mis] += mas
-
 					if _, ok := mp.Colors[col]; !ok {
 						mp.Colors[col] = 0
 					}
-
 					mp.Colors[col] += mas
-
-					// fmt.Printf("color: [%+v], vector: [%+v], weight: %+f\n", col, mis, mas)
 				}
 			}
 		}
 	}
 
-	// fmt.Printf("Entropy length")
-
-	// for col, mc := range mp.Entropy {
-	// 	for s, v := range mc.MicroState {
-	// 		fmt.Printf("E: [%+v] - [%+v]: %f\n", col, s, v)
-	// 	}
+	// for col, wt := range mp.Colors {
+	// 	fmt.Printf("color: %+v wt: %f\n", col, wt)
 	// }
-	for col, wt := range mp.Colors {
-		fmt.Printf("color: %+v wt: %f\n", col, wt)
-	}
 
-	// fmt.Printf("Cell Size [%d, %d]. Pixels: %d\n", sX, sY, len(mp.Cells))
-	// fmt.Printf("	Averaged Weights %+v", mp.Entropy)
+	// fmt.Printf("	%d Unique weighted sets\n", len(mp.Colors))
 }
 
 type WFModelSet struct {
@@ -207,7 +245,9 @@ type WFModelSet struct {
 	BaseImage    *image.RGBA
 	Partitions   []*WFModelPartition
 	States       []*CellState
-	Colors       []color.Color
+	VWeights     map[color.RGBA]map[CellNVector]float64
+	CWeights     map[color.RGBA]float64
+	Output       *image.RGBA
 }
 
 // Create a new model set from the provided image at path
@@ -241,6 +281,8 @@ func NewWFModelSet(path string, subdivX, subdivY int) (*WFModelSet, error) {
 		Subdivisions: image.Point{Y: subdivY, X: subdivX},
 		BaseImage:    ImageToRGBA(img),
 		Partitions:   []*WFModelPartition{},
+		VWeights:     make(map[color.RGBA]map[CellNVector]float64),
+		CWeights:     make(map[color.RGBA]float64),
 	}
 
 	for y := 0; y < subdivY; y++ {
@@ -257,15 +299,65 @@ func NewWFModelSet(path string, subdivX, subdivY int) (*WFModelSet, error) {
 				Cells:          []*CellState{},
 				Colors:         make(map[color.RGBA]float64),
 				Entropy:        make(map[color.RGBA]*MacroState),
+				Checklist:      make(map[image.Point]bool),
 			}
 			partition.Data = CopyImageRegionData(model.BaseImage, partition.Region)
 			model.Partitions = append(model.Partitions, partition)
+			partition.Output = image.NewRGBA(partition.Region)
 		}
 	}
 
+	model.Output = image.NewRGBA(image.Rect(0, 0, sX, sY))
+
 	for _, mp := range model.Partitions {
 		mp.Analyze()
+		for col, macro := range mp.Entropy {
+			for cellv, wt := range macro.MicroState {
+				if _, ok := model.VWeights[col]; !ok {
+					model.VWeights[col] = make(map[CellNVector]float64)
+				}
+				if _, ok := model.VWeights[col][cellv]; !ok {
+					model.VWeights[col][cellv] = 0
+				}
+				model.VWeights[col][cellv] += wt
+			}
+		}
+
+		for col, wt := range mp.Colors {
+			if _, ok := model.CWeights[col]; !ok {
+				model.CWeights[col] = 0
+			}
+			model.CWeights[col] += wt
+		}
 	}
+
+	// fmt.Printf("\n%d Unique weighted sets.\n", len(model.VWeights))
+
+	// for col, cvm := range model.VWeights {
+	// 	fmt.Printf("Color %+v:\n", col)
+	// 	for i, w := range cvm {
+	// 		fmt.Printf("	%+v - %f\n", i, w)
+	// 	}
+	// }
+
+	// fmt.Printf("\nTotal Weights:\n")
+	// for col, wt := range model.CWeights {
+	// 	fmt.Printf("	Color %+v - %f\n", col, wt)
+	// }
+
+	for _, mp := range model.Partitions {
+		mp.Generate()
+		// if i < 10 {
+		// 	continue
+		// }
+		SetImageRegion(model.Output, mp.Region, mp.Output)
+		fmt.Printf("mp.Region: %+v\n", mp.Region)
+	}
+
+	if err := SaveImage(fmt.Sprintf("output/newgen_%s", model.Name), model.Output); err != nil {
+		return nil, err
+	}
+	// mpOneTest := model.Partitions[0]
 
 	return model, nil
 }
@@ -276,6 +368,29 @@ func (model *WFModelSet) Save() error {
 		return err
 	}
 	return nil
+}
+
+// get a random weighted color from overall color data
+func GetWeightedColor(weights map[color.RGBA]float64) color.RGBA {
+	cumulativeWt := []float64{}
+	items := []color.RGBA{}
+	cumulative := float64(0)
+
+	for c, w := range weights {
+		cumulative += w
+		cumulativeWt = append(cumulativeWt, cumulative)
+		items = append(items, c)
+	}
+
+	r := colorRNG.Intn(int(cumulativeWt[len(cumulativeWt)-1]))
+
+	for i, wt := range cumulativeWt {
+		if float64(r) < wt {
+			return items[i]
+		}
+	}
+
+	return color.RGBA{}
 }
 
 // Creates a new sample image
@@ -319,6 +434,7 @@ func NewSample(name string, sizeX int, sizeY int, subdivisionsX, subdivisionsY i
 
 	for _, mp := range model.Partitions {
 		mp.Analyze()
+
 	}
 
 	return model

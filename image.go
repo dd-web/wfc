@@ -101,7 +101,12 @@ func CopyImageRegionData(src *image.RGBA, region image.Rectangle) *image.RGBA {
 
 // Set a source image region's data
 func SetImageRegion(src *image.RGBA, region image.Rectangle, regionData *image.RGBA) {
-	draw.Draw(src, region, regionData, region.Min, draw.Src)
+	for y := region.Min.Y; y < region.Max.Y; y++ {
+		for x := region.Min.X; x < region.Max.X; x++ {
+			src.Set(x, y, regionData.At(x, y))
+		}
+	}
+	// draw.Draw(src, region.Bounds(), regionData, region.Min, draw.Src)
 }
 
 // Get random RGBA color value with a fixed alpha of 1 (or 255)
@@ -138,6 +143,14 @@ func GetPixelColor(img *image.RGBA, pt image.Point) color.RGBA {
 		B: img.Pix[ix+2],
 		A: img.Pix[ix+3],
 	}
+}
+
+// Set the pixel color value
+func SetPixelColor(img *image.RGBA, pt image.Point, color color.RGBA) {
+	if !pt.In(img.Bounds()) {
+		return
+	}
+	img.Set(pt.X, pt.Y, color)
 }
 
 // Gets a color that cooresponds to the index of the modulus of the seed

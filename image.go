@@ -103,6 +103,7 @@ func CopyImageRegionData(src *image.RGBA, region image.Rectangle) *image.RGBA {
 func SetImageRegion(src *image.RGBA, region image.Rectangle, regionData *image.RGBA) {
 	for y := region.Min.Y; y < region.Max.Y; y++ {
 		for x := region.Min.X; x < region.Max.X; x++ {
+			// fmt.Printf("Setting [%d, %d] (min %d,%d max %d,%d),\n", x, y, region.Min.X, region.Min.Y, region.Max.X, region.Max.Y)
 			src.Set(x, y, regionData.At(x, y))
 		}
 	}
